@@ -846,37 +846,39 @@ def clear_scan_image_bytes():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def compute_dashboard_stats(df: pd.DataFrame):
+    """Compute top-line dashboard metrics (matches your screenshot numbers).
+
+    Notes:
+    - EXPIRING ≤30D includes already-expired items (exp_date <= today + 30 days)
+    - LOW STOCK counts items with quantity <= low_stock_threshold (independent of expiry)
+    - HEALTHY is computed as: total - low_stock - expiring_30
+      (this matches the LabTrack-style KPI math you showed: total = low + expiring + healthy,
+       even though low-stock and expiring can overlap for a given item)
+    """
     if df is None or df.empty:
-        return {
-            "total": 0,
-            "low_stock": 0,
-            "expiring_30": 0,
-            "expired": 0,
-            "healthy": 0,
-        }
+        return {"total": 0, "low_stock": 0, "expiring_30": 0, "expired": 0, "healthy": 0}
 
     today = date.today()
     expiring_cutoff = today + timedelta(days=30)
 
-    low_mask = df["quantity"] <= df["low_stock_threshold"]
+    # Expiring (and expired) items
     exp_mask = df["expiration_date"].notna() & (df["expiration_date"] <= expiring_cutoff)
     expired_mask = df["expiration_date"].notna() & (df["expiration_date"] < today)
+
+    # Low stock: quantity <= threshold (treat NaN as not-low by default)
+    low_mask = df["quantity"].notna() & df["low_stock_threshold"].notna() & (df["quantity"] <= df["low_stock_threshold"])
 
     total = int(len(df))
     low_stock = int(low_mask.sum())
     expiring_30 = int(exp_mask.sum())
     expired = int(expired_mask.sum())
 
-    healthy_mask = ~(low_mask | exp_mask | expired_mask)
-    healthy = int(healthy_mask.sum())
+    healthy = int(total - low_stock - expiring_30)
+    if healthy < 0:
+        # Guardrail (shouldn't happen unless data is inconsistent)
+        healthy = 0
 
-    return {
-        "total": total,
-        "low_stock": low_stock,
-        "expiring_30": expiring_30,
-        "expired": expired,
-        "healthy": healthy,
-    }
+    return {"total": total, "low_stock": low_stock, "expiring_30": expiring_30, "expired": expired, "healthy": healthy}
 
 def render_topbar(active_page: str):
     c1, c2 = st.columns([7, 3])
@@ -982,8 +984,9 @@ def render_dashboard(df: pd.DataFrame):
     today = date.today()
     expiring_cutoff = today + timedelta(days=30)
 
-    # Low stock items
-    low_df = df[df["quantity"] <= df["low_stock_threshold"]].copy()
+    exp_mask = df["expiration_date"].notna() & (df["expiration_date"] <= expiring_cutoff)
+    # Low stock items (exclude expiring/expired; strictly below threshold)
+    low_df = df[(df["quantity"] < df["low_stock_threshold"]) & (~exp_mask)].copy()
     if not low_df.empty:
         low_df["pct"] = low_df.apply(
             lambda r: (r["quantity"] / r["low_stock_threshold"]) if r["low_stock_threshold"] else 0,
@@ -993,7 +996,7 @@ def render_dashboard(df: pd.DataFrame):
         low_df["severity"] = low_df["pct"].fillna(0) + 1000  # keep after expiration alerts
 
     # Expiring/Expired items (<= 30 days OR already expired)
-    exp_df = df[df["expiration_date"].notna() & (df["expiration_date"] <= expiring_cutoff)].copy()
+    exp_df = df[exp_mask].copy()
     if not exp_df.empty:
         exp_df["days_to_exp"] = exp_df["expiration_date"].apply(lambda d: (d - today).days if pd.notnull(d) else 9999)
         # Expired first (negative days), then soonest expiration
