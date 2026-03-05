@@ -859,7 +859,7 @@ def compute_dashboard_stats(df: pd.DataFrame):
     expiring_cutoff = today + timedelta(days=30)
 
     low_mask = df["quantity"] <= df["low_stock_threshold"]
-    exp_mask = df["expiration_date"].notna() & (df["expiration_date"] <= expiring_cutoff) & (df["expiration_date"] >= today)
+    exp_mask = df["expiration_date"].notna() & (df["expiration_date"] <= expiring_cutoff)
     expired_mask = df["expiration_date"].notna() & (df["expiration_date"] < today)
 
     total = int(len(df))
@@ -979,35 +979,87 @@ def render_dashboard(df: pd.DataFrame):
         st.info("No inventory loaded.")
         return
 
+    today = date.today()
+    expiring_cutoff = today + timedelta(days=30)
+
+    # Low stock items
     low_df = df[df["quantity"] <= df["low_stock_threshold"]].copy()
-    if low_df.empty:
-        st.success("No low-stock items 🎉")
+    if not low_df.empty:
+        low_df["pct"] = low_df.apply(
+            lambda r: (r["quantity"] / r["low_stock_threshold"]) if r["low_stock_threshold"] else 0,
+            axis=1,
+        )
+        # Higher urgency = lower pct
+        low_df["severity"] = low_df["pct"].fillna(0) + 1000  # keep after expiration alerts
+
+    # Expiring/Expired items (<= 30 days OR already expired)
+    exp_df = df[df["expiration_date"].notna() & (df["expiration_date"] <= expiring_cutoff)].copy()
+    if not exp_df.empty:
+        exp_df["days_to_exp"] = exp_df["expiration_date"].apply(lambda d: (d - today).days if pd.notnull(d) else 9999)
+        # Expired first (negative days), then soonest expiration
+        exp_df["severity"] = exp_df["days_to_exp"]
+
+    # Combine alerts
+    alert_frames = []
+    if not exp_df.empty:
+        exp_df["_alert_kind"] = exp_df["days_to_exp"].apply(lambda x: "expired" if x < 0 else "expiring")
+        alert_frames.append(exp_df)
+    if not low_df.empty:
+        low_df["_alert_kind"] = "low"
+        alert_frames.append(low_df)
+
+    if not alert_frames:
+        st.success("No alerts 🎉")
         return
 
-    # Show the most critical first (lowest % of threshold)
-    low_df["pct"] = low_df.apply(lambda r: (r["quantity"] / r["low_stock_threshold"]) if r["low_stock_threshold"] else 0, axis=1)
-    low_df = low_df.sort_values(["pct", "quantity"], ascending=[True, True]).head(12)
+    alerts = pd.concat(alert_frames, axis=0, ignore_index=True, sort=False)
+    alerts = alerts.sort_values("severity", ascending=True).head(12)
 
-    for _, r in low_df.iterrows():
+    for _, r in alerts.iterrows():
         name = str(r.get("name", "N/A"))
-        qty = float(r.get("quantity", 0) or 0)
-        thr = float(r.get("low_stock_threshold", 0) or 0)
-        unit = str(r.get("unit", ""))
         supplier = str(r.get("supplier", "N/A"))
         location = str(r.get("location", "N/A"))
-        st.markdown(
-            f"""
-            <div class="lt-alert">
-              <div>
-                <div class="t">{name}</div>
-                <div class="m">STOCK: {qty:.2f}{(" "+unit) if unit else ""} · THR: {thr:.2f}{(" "+unit) if unit else ""} · {supplier} · {location}</div>
-              </div>
-              <div class="lt-tag">LOW STOCK</div>
-            </div>
-            <div style="height:.5rem"></div>
-            """,
-            unsafe_allow_html=True,
-        )
+
+        kind = str(r.get("_alert_kind", "low"))
+
+        if kind in ("expired", "expiring"):
+            exp = r.get("expiration_date")
+            exp_date = exp.strftime("%Y-%m-%d") if hasattr(exp, "strftime") else str(exp)
+            tag = "EXPIRED" if kind == "expired" else "EXPIRING SOON"
+            tag_style = "background: rgba(255, 59, 48, .10); color: #d92d20; border: 1px solid rgba(255, 59, 48, .25);" if kind == "expired" else "background: rgba(245, 158, 11, .12); color: #b45309; border: 1px solid rgba(245, 158, 11, .25);"
+
+            st.markdown(
+                f'''
+                <div class="lt-alert" style="border-color: rgba(255, 59, 48, .30); background: rgba(255, 59, 48, .04);">
+                  <div>
+                    <div class="t">{name}</div>
+                    <div class="m">EXP: {exp_date} · {supplier} · {location}</div>
+                  </div>
+                  <div class="lt-tag" style="{tag_style}">{tag}</div>
+                </div>
+                <div style="height:.5rem"></div>
+                ''',
+                unsafe_allow_html=True,
+            )
+        else:
+            qty = float(r.get("quantity", 0) or 0)
+            thr = float(r.get("low_stock_threshold", 0) or 0)
+            unit = str(r.get("unit", ""))
+            tag_style = "background: rgba(245, 158, 11, .12); color: #b45309; border: 1px solid rgba(245, 158, 11, .25);"
+
+            st.markdown(
+                f'''
+                <div class="lt-alert">
+                  <div>
+                    <div class="t">{name}</div>
+                    <div class="m">STOCK: {qty:.2f}{(" "+unit) if unit else ""} · THR: {thr:.2f}{(" "+unit) if unit else ""} · {supplier} · {location}</div>
+                  </div>
+                  <div class="lt-tag" style="{tag_style}">LOW STOCK</div>
+                </div>
+                <div style="height:.5rem"></div>
+                ''',
+                unsafe_allow_html=True,
+            )
 
 def render_all_reagents(df: pd.DataFrame):
     render_topbar("All Reagents")
