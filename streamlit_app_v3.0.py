@@ -660,6 +660,55 @@ def audit(action: str, row: int, reagent_name: str, details: str):
         body={"values": [[ts, st.session_state.username, st.session_state.role, action, str(row), reagent_name, details]]},
     ).execute())
 
+
+def parse_expiration_dates(series: pd.Series) -> pd.Series:
+    """Parse expiration dates robustly.
+
+    Handles:
+      - empty / N/A values
+      - multiple date string formats (month-first and day-first)
+      - Excel serial date numbers (e.g., 45234)
+    Returns a Series of python datetime.date (or NaT).
+    """
+    if series is None:
+        return pd.Series(dtype="object")
+
+    s = series.copy()
+
+    # Normalize empties
+    # Keep non-strings as-is; for strings, strip whitespace.
+    def _clean(v):
+        if v is None:
+            return None
+        if isinstance(v, str):
+            vv = v.strip()
+            if vv == "" or vv.lower() in {"n/a", "na", "none", "null"}:
+                return None
+            return vv
+        return v
+
+    s = s.map(_clean)
+
+    # Excel serial numbers (commonly show up when a date cell is read as a number)
+    num = pd.to_numeric(s, errors="coerce")
+    serial_mask = num.notna() & num.between(20000, 80000)  # ~1954-2119
+
+    parsed = pd.to_datetime(s, errors="coerce")
+
+    # Try day-first parsing for leftovers (common for non-US entry)
+    leftover = parsed.isna() & s.notna()
+    if leftover.any():
+        parsed_dayfirst = pd.to_datetime(s[leftover], errors="coerce", dayfirst=True)
+        parsed.loc[leftover] = parsed_dayfirst
+
+    # Apply serial parsing last (so numeric strings like 20260301 aren't treated as serials)
+    if serial_mask.any():
+        parsed_serial = pd.to_datetime(num[serial_mask], unit="D", origin="1899-12-30", errors="coerce")
+        parsed.loc[serial_mask] = parsed_serial
+
+    return parsed.dt.date
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # LOAD INVENTORY
 # ─────────────────────────────────────────────────────────────────────────────
@@ -690,7 +739,7 @@ def load_inventory():
     df["_row"] = [i + 2 for i in range(len(df))]
     df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(0.0)
     df["low_stock_threshold"] = pd.to_numeric(df["low_stock_threshold"], errors="coerce").fillna(10.0)
-    df["expiration_date"] = pd.to_datetime(df["expiration_date"], errors="coerce").dt.date
+    df["expiration_date"] = parse_expiration_dates(df["expiration_date"])
 
     df = df[EXPECTED_COLS + ["_row"]]
     return df, header_map, headers
