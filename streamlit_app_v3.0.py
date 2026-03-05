@@ -37,7 +37,7 @@ except Exception:
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
-WORKSHEET_INVENTORY = "template"   # inventory tab name
+WORKSHEET_INVENTORY = "Inventory"   # inventory tab name
 WORKSHEET_LOCKS = "locks"         # optional locks tab (recommended)
 WORKSHEET_AUDIT = "audit_log"     # optional audit tab (recommended)
 WORKSHEET_USAGE = "usage_log"
@@ -598,7 +598,12 @@ if not st.session_state.authenticated:
                 st.error("Invalid username or password")
     st.stop()
 
-# Sidebar session controls are handled in sidebar_nav()
+if st.sidebar.button("🚪 Logout", use_container_width=True):
+    for k in ["authenticated", "username", "role"]:
+        st.session_state.pop(k, None)
+    st.rerun()
+
+st.sidebar.success(f"Logged in as **{st.session_state.username}** ({st.session_state.role})", icon="👤")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LOCKS (soft-lock)
@@ -660,55 +665,6 @@ def audit(action: str, row: int, reagent_name: str, details: str):
         body={"values": [[ts, st.session_state.username, st.session_state.role, action, str(row), reagent_name, details]]},
     ).execute())
 
-
-def parse_expiration_dates(series: pd.Series) -> pd.Series:
-    """Parse expiration dates robustly.
-
-    Handles:
-      - empty / N/A values
-      - multiple date string formats (month-first and day-first)
-      - Excel serial date numbers (e.g., 45234)
-    Returns a Series of python datetime.date (or NaT).
-    """
-    if series is None:
-        return pd.Series(dtype="object")
-
-    s = series.copy()
-
-    # Normalize empties
-    # Keep non-strings as-is; for strings, strip whitespace.
-    def _clean(v):
-        if v is None:
-            return None
-        if isinstance(v, str):
-            vv = v.strip()
-            if vv == "" or vv.lower() in {"n/a", "na", "none", "null"}:
-                return None
-            return vv
-        return v
-
-    s = s.map(_clean)
-
-    # Excel serial numbers (commonly show up when a date cell is read as a number)
-    num = pd.to_numeric(s, errors="coerce")
-    serial_mask = num.notna() & num.between(20000, 80000)  # ~1954-2119
-
-    parsed = pd.to_datetime(s, errors="coerce")
-
-    # Try day-first parsing for leftovers (common for non-US entry)
-    leftover = parsed.isna() & s.notna()
-    if leftover.any():
-        parsed_dayfirst = pd.to_datetime(s[leftover], errors="coerce", dayfirst=True)
-        parsed.loc[leftover] = parsed_dayfirst
-
-    # Apply serial parsing last (so numeric strings like 20260301 aren't treated as serials)
-    if serial_mask.any():
-        parsed_serial = pd.to_datetime(num[serial_mask], unit="D", origin="1899-12-30", errors="coerce")
-        parsed.loc[serial_mask] = parsed_serial
-
-    return parsed.dt.date
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # LOAD INVENTORY
 # ─────────────────────────────────────────────────────────────────────────────
@@ -739,7 +695,7 @@ def load_inventory():
     df["_row"] = [i + 2 for i in range(len(df))]
     df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(0.0)
     df["low_stock_threshold"] = pd.to_numeric(df["low_stock_threshold"], errors="coerce").fillna(10.0)
-    df["expiration_date"] = parse_expiration_dates(df["expiration_date"])
+    df["expiration_date"] = pd.to_datetime(df["expiration_date"], errors="coerce").dt.date
 
     df = df[EXPECTED_COLS + ["_row"]]
     return df, header_map, headers
@@ -846,39 +802,37 @@ def clear_scan_image_bytes():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def compute_dashboard_stats(df: pd.DataFrame):
-    """Compute top-line dashboard metrics (matches your screenshot numbers).
-
-    Notes:
-    - EXPIRING ≤30D includes already-expired items (exp_date <= today + 30 days)
-    - LOW STOCK counts items with quantity <= low_stock_threshold (independent of expiry)
-    - HEALTHY is computed as: total - low_stock - expiring_30
-      (this matches the LabTrack-style KPI math you showed: total = low + expiring + healthy,
-       even though low-stock and expiring can overlap for a given item)
-    """
     if df is None or df.empty:
-        return {"total": 0, "low_stock": 0, "expiring_30": 0, "expired": 0, "healthy": 0}
+        return {
+            "total": 0,
+            "low_stock": 0,
+            "expiring_30": 0,
+            "expired": 0,
+            "healthy": 0,
+        }
 
     today = date.today()
     expiring_cutoff = today + timedelta(days=30)
 
-    # Expiring (and expired) items
-    exp_mask = df["expiration_date"].notna() & (df["expiration_date"] <= expiring_cutoff)
+    low_mask = df["quantity"] <= df["low_stock_threshold"]
+    exp_mask = df["expiration_date"].notna() & (df["expiration_date"] <= expiring_cutoff) & (df["expiration_date"] >= today)
     expired_mask = df["expiration_date"].notna() & (df["expiration_date"] < today)
-
-    # Low stock: quantity <= threshold (treat NaN as not-low by default)
-    low_mask = df["quantity"].notna() & df["low_stock_threshold"].notna() & (df["quantity"] <= df["low_stock_threshold"])
 
     total = int(len(df))
     low_stock = int(low_mask.sum())
     expiring_30 = int(exp_mask.sum())
     expired = int(expired_mask.sum())
 
-    healthy = int(total - low_stock - expiring_30)
-    if healthy < 0:
-        # Guardrail (shouldn't happen unless data is inconsistent)
-        healthy = 0
+    healthy_mask = ~(low_mask | exp_mask | expired_mask)
+    healthy = int(healthy_mask.sum())
 
-    return {"total": total, "low_stock": low_stock, "expiring_30": expiring_30, "expired": expired, "healthy": healthy}
+    return {
+        "total": total,
+        "low_stock": low_stock,
+        "expiring_30": expiring_30,
+        "expired": expired,
+        "healthy": healthy,
+    }
 
 def render_topbar(active_page: str):
     c1, c2 = st.columns([7, 3])
@@ -896,7 +850,7 @@ def render_topbar(active_page: str):
                 unsafe_allow_html=True
             )
         with cc2:
-            if st.button("🔄 Sync", use_container_width=True, help="Reload inventory from Google Sheets", key="topbar_sync_btn"):
+            if st.button("🔄 Sync", use_container_width=True, help="Reload inventory from Google Sheets"):
                 load_inventory.clear()
                 st.rerun()
 
@@ -934,7 +888,7 @@ def sidebar_nav():
         st.caption("SESSION")
         st.write(f"👤 **{st.session_state.username}** ({st.session_state.role})")
 
-        if st.button("🚪 Logout", use_container_width=True, key="sidebar_logout_btn"):
+        if st.button("🚪 Logout", use_container_width=True):
             for k in ["authenticated", "username", "role"]:
                 st.session_state.pop(k, None)
             st.rerun()
@@ -981,88 +935,35 @@ def render_dashboard(df: pd.DataFrame):
         st.info("No inventory loaded.")
         return
 
-    today = date.today()
-    expiring_cutoff = today + timedelta(days=30)
-
-    exp_mask = df["expiration_date"].notna() & (df["expiration_date"] <= expiring_cutoff)
-    # Low stock items (exclude expiring/expired; strictly below threshold)
-    low_df = df[(df["quantity"] < df["low_stock_threshold"]) & (~exp_mask)].copy()
-    if not low_df.empty:
-        low_df["pct"] = low_df.apply(
-            lambda r: (r["quantity"] / r["low_stock_threshold"]) if r["low_stock_threshold"] else 0,
-            axis=1,
-        )
-        # Higher urgency = lower pct
-        low_df["severity"] = low_df["pct"].fillna(0) + 1000  # keep after expiration alerts
-
-    # Expiring/Expired items (<= 30 days OR already expired)
-    exp_df = df[exp_mask].copy()
-    if not exp_df.empty:
-        exp_df["days_to_exp"] = exp_df["expiration_date"].apply(lambda d: (d - today).days if pd.notnull(d) else 9999)
-        # Expired first (negative days), then soonest expiration
-        exp_df["severity"] = exp_df["days_to_exp"]
-
-    # Combine alerts
-    alert_frames = []
-    if not exp_df.empty:
-        exp_df["_alert_kind"] = exp_df["days_to_exp"].apply(lambda x: "expired" if x < 0 else "expiring")
-        alert_frames.append(exp_df)
-    if not low_df.empty:
-        low_df["_alert_kind"] = "low"
-        alert_frames.append(low_df)
-
-    if not alert_frames:
-        st.success("No alerts 🎉")
+    low_df = df[df["quantity"] <= df["low_stock_threshold"]].copy()
+    if low_df.empty:
+        st.success("No low-stock items 🎉")
         return
 
-    alerts = pd.concat(alert_frames, axis=0, ignore_index=True, sort=False)
-    alerts = alerts.sort_values("severity", ascending=True).head(12)
+    # Show the most critical first (lowest % of threshold)
+    low_df["pct"] = low_df.apply(lambda r: (r["quantity"] / r["low_stock_threshold"]) if r["low_stock_threshold"] else 0, axis=1)
+    low_df = low_df.sort_values(["pct", "quantity"], ascending=[True, True]).head(12)
 
-    for _, r in alerts.iterrows():
+    for _, r in low_df.iterrows():
         name = str(r.get("name", "N/A"))
+        qty = float(r.get("quantity", 0) or 0)
+        thr = float(r.get("low_stock_threshold", 0) or 0)
+        unit = str(r.get("unit", ""))
         supplier = str(r.get("supplier", "N/A"))
         location = str(r.get("location", "N/A"))
-
-        kind = str(r.get("_alert_kind", "low"))
-
-        if kind in ("expired", "expiring"):
-            exp = r.get("expiration_date")
-            exp_date = exp.strftime("%Y-%m-%d") if hasattr(exp, "strftime") else str(exp)
-            tag = "EXPIRED" if kind == "expired" else "EXPIRING SOON"
-            tag_style = "background: rgba(255, 59, 48, .10); color: #d92d20; border: 1px solid rgba(255, 59, 48, .25);" if kind == "expired" else "background: rgba(245, 158, 11, .12); color: #b45309; border: 1px solid rgba(245, 158, 11, .25);"
-
-            st.markdown(
-                f'''
-                <div class="lt-alert" style="border-color: rgba(255, 59, 48, .30); background: rgba(255, 59, 48, .04);">
-                  <div>
-                    <div class="t">{name}</div>
-                    <div class="m">EXP: {exp_date} · {supplier} · {location}</div>
-                  </div>
-                  <div class="lt-tag" style="{tag_style}">{tag}</div>
-                </div>
-                <div style="height:.5rem"></div>
-                ''',
-                unsafe_allow_html=True,
-            )
-        else:
-            qty = float(r.get("quantity", 0) or 0)
-            thr = float(r.get("low_stock_threshold", 0) or 0)
-            unit = str(r.get("unit", ""))
-            tag_style = "background: rgba(245, 158, 11, .12); color: #b45309; border: 1px solid rgba(245, 158, 11, .25);"
-
-            st.markdown(
-                f'''
-                <div class="lt-alert">
-                  <div>
-                    <div class="t">{name}</div>
-                    <div class="m">STOCK: {qty:.2f}{(" "+unit) if unit else ""} · THR: {thr:.2f}{(" "+unit) if unit else ""} · {supplier} · {location}</div>
-                  </div>
-                  <div class="lt-tag" style="{tag_style}">LOW STOCK</div>
-                </div>
-                <div style="height:.5rem"></div>
-                ''',
-                unsafe_allow_html=True,
-            )
+        st.markdown(
+            f"""
+            <div class="lt-alert">
+              <div>
+                <div class="t">{name}</div>
+                <div class="m">STOCK: {qty:.2f}{(" "+unit) if unit else ""} · THR: {thr:.2f}{(" "+unit) if unit else ""} · {supplier} · {location}</div>
+              </div>
+              <div class="lt-tag">LOW STOCK</div>
+            </div>
+            <div style="height:.5rem"></div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 def render_all_reagents(df: pd.DataFrame):
     render_topbar("All Reagents")
@@ -1209,7 +1110,7 @@ def render_inbound_add():
 
         if df_csv is not None:
             if st.checkbox("I confirm I want to append these rows into Google Sheets", key="confirm_csv_import"):
-                if st.button("🚀 Import CSV → Append to Inventory", type="primary", use_container_width=True, key="import_csv_btn"):
+                if st.button("🚀 Import CSV → Append to Inventory", type="primary", use_container_width=True):
                     try:
                         if not RAW_HEADERS:
                             st.error("Cannot import: inventory sheet header row is missing.")
@@ -1407,7 +1308,7 @@ def render_barcode_scan():
     with cols[1]:
         show_ocr = st.checkbox("Show OCR text (debug)", value=False)
 
-    if st.button("🔎 Run Cloud OCR", type="primary", use_container_width=True, key="run_cloud_ocr_btn", disabled=not vision_available()):
+    if st.button("🔎 Run Cloud OCR", type="primary", use_container_width=True, disabled=not vision_available()):
         try:
             with st.spinner("Running Vision OCR..."):
                 bytes_for_ocr = autocrop_bytes_using_vision(image_bytes) if auto_crop else image_bytes
@@ -1496,7 +1397,7 @@ def render_barcode_scan():
 
     c = st.columns([1, 2])
     with c[0]:
-        if st.button("🧹 Clear image + OCR", use_container_width=True, key="clear_ocr_btn"):
+        if st.button("🧹 Clear image + OCR", use_container_width=True):
             clear_scan_image_bytes()
             st.session_state.pop("scan_fields", None)
             st.session_state.pop("ocr_text", None)
@@ -1520,7 +1421,7 @@ def render_admin():
 
     st.subheader("Recommended sheet headers")
     st.code(
-        "Inventory (template) header row:\n"
+        "Inventory (Inventory) header row:\n"
         + " | ".join(EXPECTED_COLS)
         + "\n\nLocks (locks) header row:\n"
           "row | locked_by | locked_until_iso | purpose\n\n"
