@@ -37,7 +37,7 @@ except Exception:
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
-WORKSHEET_INVENTORY = "template"   # inventory tab name
+WORKSHEET_INVENTORY = "Inventory"   # inventory tab name
 WORKSHEET_LOCKS = "locks"         # optional locks tab (recommended)
 WORKSHEET_AUDIT = "audit_log"     # optional audit tab (recommended)
 WORKSHEET_USAGE = "usage_log"
