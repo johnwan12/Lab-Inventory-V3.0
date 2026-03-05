@@ -598,12 +598,7 @@ if not st.session_state.authenticated:
                 st.error("Invalid username or password")
     st.stop()
 
-if st.sidebar.button("🚪 Logout", use_container_width=True):
-    for k in ["authenticated", "username", "role"]:
-        st.session_state.pop(k, None)
-    st.rerun()
-
-st.sidebar.success(f"Logged in as **{st.session_state.username}** ({st.session_state.role})", icon="👤")
+# Sidebar session controls are handled in sidebar_nav()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LOCKS (soft-lock)
@@ -850,7 +845,7 @@ def render_topbar(active_page: str):
                 unsafe_allow_html=True
             )
         with cc2:
-            if st.button("🔄 Sync", use_container_width=True, help="Reload inventory from Google Sheets"):
+            if st.button("🔄 Sync", use_container_width=True, help="Reload inventory from Google Sheets", key="topbar_sync_btn"):
                 load_inventory.clear()
                 st.rerun()
 
@@ -888,7 +883,7 @@ def sidebar_nav():
         st.caption("SESSION")
         st.write(f"👤 **{st.session_state.username}** ({st.session_state.role})")
 
-        if st.button("🚪 Logout", use_container_width=True):
+        if st.button("🚪 Logout", use_container_width=True, key="sidebar_logout_btn"):
             for k in ["authenticated", "username", "role"]:
                 st.session_state.pop(k, None)
             st.rerun()
