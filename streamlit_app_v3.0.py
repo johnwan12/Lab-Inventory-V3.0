@@ -1209,7 +1209,7 @@ def render_inbound_add():
 
         if df_csv is not None:
             if st.checkbox("I confirm I want to append these rows into Google Sheets", key="confirm_csv_import"):
-                if st.button("🚀 Import CSV → Append to Inventory", type="primary", use_container_width=True):
+                if st.button("🚀 Import CSV → Append to Inventory", type="primary", use_container_width=True, key="import_csv_btn"):
                     try:
                         if not RAW_HEADERS:
                             st.error("Cannot import: inventory sheet header row is missing.")
@@ -1407,7 +1407,7 @@ def render_barcode_scan():
     with cols[1]:
         show_ocr = st.checkbox("Show OCR text (debug)", value=False)
 
-    if st.button("🔎 Run Cloud OCR", type="primary", use_container_width=True, disabled=not vision_available()):
+    if st.button("🔎 Run Cloud OCR", type="primary", use_container_width=True, key="run_cloud_ocr_btn", disabled=not vision_available()):
         try:
             with st.spinner("Running Vision OCR..."):
                 bytes_for_ocr = autocrop_bytes_using_vision(image_bytes) if auto_crop else image_bytes
@@ -1496,7 +1496,7 @@ def render_barcode_scan():
 
     c = st.columns([1, 2])
     with c[0]:
-        if st.button("🧹 Clear image + OCR", use_container_width=True):
+        if st.button("🧹 Clear image + OCR", use_container_width=True, key="clear_ocr_btn"):
             clear_scan_image_bytes()
             st.session_state.pop("scan_fields", None)
             st.session_state.pop("ocr_text", None)
